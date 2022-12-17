@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1"
@@ -65,10 +67,25 @@ func readPrivateKey(keyContents []byte) (crypto.Signer, error) {
 	block, _ := pem.Decode(keyContents)
 	if block == nil {
 		return nil, fmt.Errorf("no PEM found")
-	} else if block.Type != "RSA PRIVATE KEY" && block.Type != "ECDSA PRIVATE KEY" {
-		return nil, fmt.Errorf("incorrect PEM type %s", block.Type)
+	} else if block.Type == "PRIVATE KEY" {
+		signer, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse PKCS8: %w", err)
+		}
+		switch t := signer.(type) {
+		case *rsa.PrivateKey:
+			return signer.(*rsa.PrivateKey), nil
+		case *ecdsa.PrivateKey:
+			return signer.(*ecdsa.PrivateKey), nil
+		default:
+			return nil, fmt.Errorf("unsupported PKCS8 key type: %t", t)
+		}
+	} else if block.Type == "RSA PRIVATE KEY" {
+		return x509.ParsePKCS1PrivateKey(block.Bytes)
+	} else if block.Type == "EC PRIVATE KEY" || block.Type == "ECDSA PRIVATE KEY" {
+		return x509.ParseECPrivateKey(block.Bytes)
 	}
-	return x509.ParsePKCS1PrivateKey(block.Bytes)
+	return nil, fmt.Errorf("incorrect PEM type %s", block.Type)
 }
 
 func readCert(certContents []byte) (*x509.Certificate, error) {
@@ -83,7 +100,7 @@ func readCert(certContents []byte) (*x509.Certificate, error) {
 
 func makeIssuer(args *Args) error {
 	keyFile, certFile := *args.caKey, *args.caCert
-	key, err := makeKey(keyFile)
+	key, err := makeKey(args, keyFile)
 	if err != nil {
 		return err
 	}
@@ -94,12 +111,23 @@ func makeIssuer(args *Args) error {
 	return nil
 }
 
-func makeKey(filename string) (*rsa.PrivateKey, error) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, err
+func makeKey(args *Args, filename string) (crypto.Signer, error) {
+	var key crypto.Signer
+	var err error
+	var alg = args.getAlg()
+	switch {
+	case alg == x509.RSA:
+		key, err = rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			return nil, err
+		}
+	case alg == x509.ECDSA:
+		key, err = ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+		if err != nil {
+			return nil, err
+		}
 	}
-	der := x509.MarshalPKCS1PrivateKey(key)
+	der, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +137,7 @@ func makeKey(filename string) (*rsa.PrivateKey, error) {
 	}
 	defer file.Close()
 	err = pem.Encode(file, &pem.Block{
-		Type:  "RSA PRIVATE KEY",
+		Type:  "PRIVATE KEY",
 		Bytes: der,
 	})
 	if err != nil {
@@ -222,7 +250,7 @@ func sign(iss *Issuer, args *Args) (*x509.Certificate, error) {
 	if err != nil && !os.IsExist(err) {
 		return nil, err
 	}
-	key, err := makeKey(fmt.Sprintf("%s/key.pem", cnFolder))
+	key, err := makeKey(args, fmt.Sprintf("%s/key.pem", cnFolder))
 	if err != nil {
 		return nil, err
 	}

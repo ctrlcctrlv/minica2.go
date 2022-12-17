@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/x509/pkix"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"os"
@@ -11,7 +12,7 @@ import (
 )
 
 type Args struct {
-	caKey, caCert *string
+	caKey, caCert, caAlg *string
 	macValidity *bool
 	domains, ipAddresses ArgsArr
 	org, iorg, iunit, icountry, ilocale, iaddress, ipostal ArgsArr
@@ -65,6 +66,7 @@ func (args *Args) assignStringFlags() (flag.FlagSet) {
 	var sflag = flag.NewFlagSet("string", flag.ExitOnError)
 	args.caKey = sflag.String("ca-key", "minica-key.pem", "Root private key filename, PEM encoded.")
 	args.caCert = sflag.String("ca-cert", "minica.pem", "Root certificate filename, PEM encoded.")
+	args.caAlg = sflag.String("ca-alg", "rsa", "Root keypair algorithm: RSA or ECDSA. Only used if generating new.")
 	return *sflag
 }
 
@@ -95,6 +97,17 @@ func (args *Args) parseIssuer() (pkix.Name) {
 		StreetAddress: args.iaddress.a,
 		PostalCode: args.ipostal.a,
 	}
+}
+
+func (args *Args) getAlg() (x509.PublicKeyAlgorithm) {
+	alg := x509.RSA
+	if strings.ToLower(*args.caAlg) == "ecdsa" {
+		alg = x509.ECDSA
+	} else if strings.ToLower(*args.caAlg) != "rsa" {
+		fmt.Printf("Unrecognized algorithm: %s (use RSA or ECDSA)\n", *args.caAlg)
+		os.Exit(1)
+	}
+	return alg
 }
 
 func (args *Args) parse() {
